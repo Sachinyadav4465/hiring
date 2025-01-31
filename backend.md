@@ -1,105 +1,132 @@
-# Hiring Test for Backend Developers
-- NOTE : You can use NodeJs/Python/ (Django/ExpressJS or any other framework of your choice as well)
 
-## **Objective**
-The objective of this test is to evaluate the candidate’s ability to:
-- Design and implement Django models with **WYSIWYG editor support**.
-- Store and manage **FAQs with multi-language translation**.
-- Follow **PEP8 conventions** and best practices.
-- Write a **clear and detailed README**.
-- Use **proper Git commit messages**.
+const express = require("express");
+const mongoose = require("mongoose");
+const redis = require("redis");
+const cors = require("cors");
+const dotenv = require("dotenv");
+const faqRoutes = require("./routes/faqRoutes");
+const { GoogleTranslator } = require("@vitalets/google-translate-api");
+const AdminBro = require("admin-bro");
+const AdminBroExpress = require("@admin-bro/express");
+const AdminBroMongoose = require("@admin-bro/mongoose");
 
----
+dotenv.config();
 
-## **Task Requirements**
+const app = express();
+const PORT = process.env.PORT || 5000;
 
-### **1. Model Design**
-- Create a model to store **FAQs**.
-- Each FAQ should have:
-  - A **question** (TextField)
-  - An **answer** (RichTextField for WYSIWYG editor support)
-  - Language-specific translations (`question_hi`, `question_bn`, etc.).
-- Implement a **model method** to retrieve translated text dynamically.
+// Middleware
+app.use(express.json());
+app.use(cors());
 
-### **2. WYSIWYG Editor Integration**
-- Use **django-ckeditor** to allow users to format answers properly.
-- Ensure that the WYSIWYG editor supports **multilingual content**.
+// Connect to MongoDB
+mongoose
+  .connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log("MongoDB connected"))
+  .catch((err) => console.error("MongoDB connection error:", err));
 
-### **3. API Development**
-- Create a ** REST API** for managing FAQs.
-- Support **language selection** via `?lang=` query parameter.
-- Ensure responses are **fast and efficient** using pre-translation.
+// Redis client setup
+const redisClient = redis.createClient({ url: process.env.REDIS_URL });
+redisClient.connect();
+redisClient.on("connect", () => console.log("Redis connected"));
+redisClient.on("error", (err) => console.error("Redis error:", err));
 
-### **4. Caching Mechanism**
-- Implement ** cache framework** to store translations.
-- Use **Redis** for improved performance.
+// FAQ Model
+const faqSchema = new mongoose.Schema({
+  question: { type: String, required: true },
+  answer: { type: String, required: true },
+  translations: { type: Map, of: String },
+});
+const FAQ = mongoose.model("FAQ", faqSchema);
 
-### **5. Multi-language Translation Support**
-- Use **Google Translate API** or `googletrans`.
-- Automate translations during object creation.
-- Provide **fallback to English** if translation is unavailable.
+// Admin Panel
+AdminBro.registerAdapter(AdminBroMongoose);
+const adminBro = new AdminBro({
+  databases: [mongoose],
+  rootPath: "/admin",
+});
+const adminRouter = AdminBroExpress.buildRouter(adminBro);
+app.use(adminBro.options.rootPath, adminRouter);
 
-### **6.  Admin Panel**
-- Register the **FAQ model** in the  Admin site or create one seperately.
-- Enable a **user-friendly admin interface** for managing FAQs.
+// Routes
+app.use("/api/faqs", faqRoutes);
 
-### **7. Unit Tests & Code Quality**
-- Write **unit tests** using `pytest` or `mocha`/`chai`.
-- Ensure tests cover **model methods and API responses**.
-- Follow **PEP8/ES6 guidelines** and use `flake8/JS tools` for linting.
+// Start Server
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-### **8. Documentation**
-- Write a **detailed README** with:
-  - Installation steps
-  - API usage examples
-  - Contribution guidelines
-- Ensure the **README is well-structured and easy to follow**.
+// backend/routes/faqRoutes.js
+const express = require("express");
+const router = express.Router();
+const FAQ = require("../models/faqModel");
+const redisClient = require("../index");
+const translate = require("@vitalets/google-translate-api");
 
-### **9. Git & Version Control**
-- Use **Git for version control**.
-- Follow **conventional commit messages**:
-  - `feat: Add multilingual FAQ model`
-  - `fix: Improve translation caching`
-  - `docs: Update README with API examples`
-- Ensure **atomic commits** with clear commit messages.
+router.get("/", async (req, res) => {
+  const lang = req.query.lang || "en";
+  
+  try {
+    const cachedData = await redisClient.get(`faqs_${lang}`);
+    if (cachedData) return res.json(JSON.parse(cachedData));
 
-### **10. Deployment & Docker Support (Bonus)**
-- Provide a **Dockerfile** and **docker-compose.yml**.
-- Deploy the application to **Heroku** or **AWS** (optional).
+    const faqs = await FAQ.find();
+    const translatedFAQs = await Promise.all(
+      faqs.map(async (faq) => {
+        if (faq.translations && faq.translations[lang]) {
+          return { question: faq.translations[lang], answer: faq.translations[lang] };
+        }
+        const translatedQuestion = (await translate(faq.question, { to: lang })).text;
+        const translatedAnswer = (await translate(faq.answer, { to: lang })).text;
+        return { question: translatedQuestion, answer: translatedAnswer };
+      })
+    );
+    
+    await redisClient.setEx(`faqs_${lang}`, 3600, JSON.stringify(translatedFAQs));
+    res.json(translatedFAQs);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching FAQs", error });
+  }
+});
 
----
+module.exports = router;
 
-## **Evaluation Criteria**
-Candidates will be evaluated based on:
-1. **Code Quality** (PEP8 compliance, readability, and modularity).
-2. **Functionality** (API correctness, multilingual support, and caching efficiency).
-3. **Documentation** (README completeness and clarity).
-4. **Testing** (Coverage and effectiveness of unit tests).
-5. **Git Best Practices** (Commit messages and branching strategy).
+// backend/models/faqModel.js
+const mongoose = require("mongoose");
 
----
+const faqSchema = new mongoose.Schema({
+  question: { type: String, required: true },
+  answer: { type: String, required: true },
+  translations: { type: Map, of: String },
+});
 
-## **Submission Instructions**
-- **Attempt the assignment** and complete your solution.
-- **Open an issue** in our repository with the relevant tag (`backend` or `frontend`, depending on the test you're applying for).
-- **Once done, tag @theakshaydhiman** in the issue, and we will review your code.
-- **Include the link to your GitHub repository**, which must be **publicly accessible**.
+module.exports = mongoose.model("FAQ", faqSchema);
 
----
+// Dockerfile
+FROM node:16
+WORKDIR /app
+COPY package.json .
+RUN npm install
+COPY . .
+EXPOSE 5000
+CMD ["node", "index.js"]
 
-## **Example API Usage**
-```bash
-# Fetch FAQs in English (default)
-curl http://localhost:8000/api/faqs/
-
-# Fetch FAQs in Hindi
-curl http://localhost:8000/api/faqs/?lang=hi
-
-# Fetch FAQs in Bengali
-curl http://localhost:8000/api/faqs/?lang=bn
-```
-
----
-
-This test ensures the candidate demonstrates **full-stack Django development skills**, covering **models, APIs, caching, internationalization, and documentation**. 🚀
-
+// docker-compose.yml
+version: "3.8"
+services:
+  app:
+    build: .
+    ports:
+      - "5000:5000"
+    depends_on:
+      - redis
+      - mongo
+    environment:
+      MONGO_URI: "mongodb+srv://Sachin:Sachin4465@cluster0.snylryw.mongodb.net/faq"
+      REDIS_URL: "redis://redis:6379"
+  mongo:
+    image: mongo
+    ports:
+      - "27017:27017"
+  redis:
+    image: redis
+    ports:
+      - "6379:6379"
